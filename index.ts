@@ -1,58 +1,93 @@
 import { assertString, exportPages, importPages } from "./deps.ts";
 
-const sid = Deno.env.get("SID");
-const exportingProjectName = Deno.env.get("SOURCE_PROJECT_NAME"); //インポート元(本来はprivateプロジェクト)
-const importingProjectName = Deno.env.get("DESTINATION_PROJECT_NAME"); //インポート先(publicプロジェクト)
-const shouldDuplicateByDefault =
-  Deno.env.get("SHOULD_DUPLICATE_BY_DEFAULT") === "True";
-
-assertString(sid);
-assertString(exportingProjectName);
-assertString(importingProjectName);
-
-console.log(`Exporting a json file from "/${exportingProjectName}"...`);
-const result = await exportPages(exportingProjectName, {
-  sid,
-  metadata: true,
-});
-if (!result.ok) {
-  const error = new Error();
-  error.name = `${result.value.name} when exporting a json file`;
-  error.message = result.value.message;
-  throw error;
-}
-const { pages } = result.value;
-console.log(`Export ${pages.length}pages:`);
-for (const page of pages) {
-  console.log(`\t${page.title}`);
+type Config = {
+  sid: string;
+  exportingProjectName: string;
+  importingProjectName: string;
 }
 
-const importingPages = pages.filter(({ lines }) => {
-  if (lines.some((line) => line.text.includes("[private.icon]"))) {
-    return false;
-  } else if (lines.some((line) => line.text.includes("[public.icon]"))) {
-    return true;
-  } else {
-    return shouldDuplicateByDefault;
+type Page = {
+  title: string;
+  lines: { text: string }[];
+}
+
+if (import.meta.main) {
+  await main();
+}
+
+async function main(): Promise<void> {
+  try {
+    const config = await getConfig();
+    const pages = await exportPagesFromProject(config);
+    const filteredPages = filterPrivateIconPages(pages);
+    await importPagesToProject(config, filteredPages);
+  } catch (error) {
+    console.error("Error:", error);
+    Deno.exit(1);
   }
-});
+}
 
-if (importingPages.length === 0) {
-  console.log("No page to be imported found.");
-} else {
-  console.log(
-    `Importing ${importingPages.length} pages to "/${importingProjectName}"...`,
-  );
-  const result = await importPages(importingProjectName, {
-    pages: importingPages,
-  }, {
+async function getConfig(): Promise<Config> {
+  const sid = Deno.env.get("SID");
+  const exportingProjectName = Deno.env.get("SOURCE_PROJECT_NAME");
+  const importingProjectName = Deno.env.get("DESTINATION_PROJECT_NAME");
+
+  assertString(sid);
+  assertString(exportingProjectName);
+  assertString(importingProjectName);
+
+  return {
     sid,
+    exportingProjectName,
+    importingProjectName
+  }
+}
+
+async function exportPagesFromProject(config: Config): Promise<Page[]> {
+  console.log(`Exporting a json file from "/${config.exportingProjectName}"...`);
+
+  const result = await exportPages(config.exportingProjectName, {
+    sid: config.sid,
+    metadata: true,
   });
+
+  if (!result.ok) {
+    const error = new Error();
+    error.name = `${result.value.name} when exporting a json file`;
+    error.message = result.value.message;
+    throw error;
+  }
+
+  return result.value.pages;
+}
+
+function filterPrivateIconPages(pages: Page[]): Page[] {
+  return pages.filter(p => !isIncludedIcon("[private.icon]")(p.lines));
+}
+
+function isIncludedIcon(icon: `[${string}.icon]`) {
+  return (lines: { text: string }[]) => lines.some((line) => line.text.includes(icon));
+}
+
+async function importPagesToProject(
+  config: Config,
+  pages: Page[],
+): Promise<void> {
+  if (pages.length === 0) {
+    console.log("No page to be imported found.");
+    return;
+  }
+
+  console.log(`Importing ${pages.length} pages to "/${config.importingProjectName}"...`);
+
+  const result = await importPages(config.importingProjectName, { pages }, { sid: config.sid });
+
   if (!result.ok) {
     const error = new Error();
     error.name = `${result.value.name} when importing pages`;
     error.message = result.value.message;
     throw error;
   }
+
   console.log(result.value);
 }
