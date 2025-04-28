@@ -9,7 +9,11 @@ type Config = {
 type Page = {
   title: string;
   lines: { text: string }[];
+  updated: number;
 }
+
+const LAST_IMPORT_FILE = "last_import.txt";
+const INITIAL_IMPORT_TIME = 1745842021;
 
 if (import.meta.main) {
   await main();
@@ -20,7 +24,20 @@ async function main(): Promise<void> {
     const config = await getConfig();
     const pages = await exportPagesFromProject(config);
     const filteredPages = filterPrivateIconPages(pages);
-    await importPagesToProject(config, filteredPages);
+    const lastImportTime = await getLastImportTime();
+    const newPages = filteredPages.filter(p => p.updated > lastImportTime);
+
+    if (newPages.length === 0) {
+      console.log("No new pages to import.");
+      return;
+    }
+
+    console.log(`Found ${newPages.length} new or updated pages to import.`);
+    console.log(newPages.map(p => p.title));
+
+
+    await importPagesToProject(config, newPages);
+    await saveLastImportTime(Math.max(...newPages.map(p => p.updated)));
   } catch (error) {
     console.error("Error:", error);
     Deno.exit(1);
@@ -90,4 +107,19 @@ async function importPagesToProject(
   }
 
   console.log(result.value);
+}
+
+async function getLastImportTime(): Promise<number> {
+  try {
+    const content = await Deno.readTextFile(LAST_IMPORT_FILE);
+    return parseInt(content, 10);
+  } catch {
+    // 初回実行時は特定の日時を設定
+    await saveLastImportTime(INITIAL_IMPORT_TIME);
+    return INITIAL_IMPORT_TIME;
+  }
+}
+
+async function saveLastImportTime(time: number): Promise<void> {
+  await Deno.writeTextFile(LAST_IMPORT_FILE, time.toString());
 }
