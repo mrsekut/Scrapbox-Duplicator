@@ -98,39 +98,25 @@ async function importPagesToProject(
 
   console.log(`Importing ${pages.length} pages to "/${config.importingProjectName}" in batches of ${BATCH_SIZE}...`);
 
-  // Split pages into batches
-  const batches = Array.from(
-    { length: Math.ceil(pages.length / BATCH_SIZE) },
-    (_, i) => pages.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
-  );
-
-  // Import each batch sequentially
-  await batches.reduce(async (previousPromise, batch, index) => {
-    await previousPromise;
-
-    const batchNumber = index + 1;
-    const totalBatches = batches.length;
-
+  await processBatches(pages, BATCH_SIZE, async (batch, batchNumber, totalBatches) => {
     console.log(`Importing batch ${batchNumber}/${totalBatches} (${batch.length} pages)...`);
 
     const result = await importPages(config.importingProjectName, { pages: batch }, { sid: config.sid });
 
     if (!result.ok) {
       const error = new Error();
-      return {
-        ...error,
-        name: `${result.value.name} when importing pages (batch ${batchNumber}/${totalBatches})`,
-        message: result.value.message,
-      }
+      error.name = `${result.value.name} when importing pages (batch ${batchNumber}/${totalBatches})`;
+      error.message = result.value.message;
+      throw error;
     }
 
     console.log(`Batch ${batchNumber}/${totalBatches} completed successfully.`);
 
     // Add a small delay between batches to avoid rate limiting
-    if (index < batches.length - 1) {
+    if (batchNumber < totalBatches) {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-  }, Promise.resolve());
+  });
 
   console.log(`All ${pages.length} pages imported successfully.`);
 }
@@ -148,4 +134,20 @@ async function getLastImportTime(): Promise<number> {
 
 async function saveLastImportTime(time: number): Promise<void> {
   await Deno.writeTextFile(LAST_IMPORT_FILE, time.toString());
+}
+
+async function processBatches<T>(
+  items: T[],
+  batchSize: number,
+  processFunc: (batch: T[], batchNumber: number, totalBatches: number) => Promise<void>
+): Promise<void> {
+  const batches = Array.from(
+    { length: Math.ceil(items.length / batchSize) },
+    (_, i) => items.slice(i * batchSize, (i + 1) * batchSize)
+  );
+
+  await batches.reduce(async (previousPromise, batch, index) => {
+    await previousPromise;
+    await processFunc(batch, index + 1, batches.length);
+  }, Promise.resolve());
 }
