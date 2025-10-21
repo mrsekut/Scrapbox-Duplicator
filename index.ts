@@ -14,6 +14,7 @@ type Page = {
 
 const LAST_IMPORT_FILE = "last_import.txt";
 const INITIAL_IMPORT_TIME = 1745842021;
+const BATCH_SIZE = 100; // Number of pages to import per batch
 
 if (import.meta.main) {
   await main();
@@ -95,18 +96,43 @@ async function importPagesToProject(
     return;
   }
 
-  console.log(`Importing ${pages.length} pages to "/${config.importingProjectName}"...`);
+  console.log(`Importing ${pages.length} pages to "/${config.importingProjectName}" in batches of ${BATCH_SIZE}...`);
 
-  const result = await importPages(config.importingProjectName, { pages }, { sid: config.sid });
+  // Split pages into batches
+  const batches = Array.from(
+    { length: Math.ceil(pages.length / BATCH_SIZE) },
+    (_, i) => pages.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
+  );
 
-  if (!result.ok) {
-    const error = new Error();
-    error.name = `${result.value.name} when importing pages`;
-    error.message = result.value.message;
-    throw error;
-  }
+  // Import each batch sequentially
+  await batches.reduce(async (previousPromise, batch, index) => {
+    await previousPromise;
 
-  console.log(result.value);
+    const batchNumber = index + 1;
+    const totalBatches = batches.length;
+
+    console.log(`Importing batch ${batchNumber}/${totalBatches} (${batch.length} pages)...`);
+
+    const result = await importPages(config.importingProjectName, { pages: batch }, { sid: config.sid });
+
+    if (!result.ok) {
+      const error = new Error();
+      return {
+        ...error,
+        name: `${result.value.name} when importing pages (batch ${batchNumber}/${totalBatches})`,
+        message: result.value.message,
+      }
+    }
+
+    console.log(`Batch ${batchNumber}/${totalBatches} completed successfully.`);
+
+    // Add a small delay between batches to avoid rate limiting
+    if (index < batches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }, Promise.resolve());
+
+  console.log(`All ${pages.length} pages imported successfully.`);
 }
 
 async function getLastImportTime(): Promise<number> {
