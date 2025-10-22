@@ -1,153 +1,118 @@
-import { assertString, exportPages, importPages } from "./deps.ts";
-
-type Config = {
-  sid: string;
-  exportingProjectName: string;
-  importingProjectName: string;
-}
+import { Effect, Config } from 'effect';
+import { exportPagesFromProject, importPagesToProject } from './pages';
 
 type Page = {
   title: string;
-  lines: { text: string }[];
+  lines: {
+    text: string;
+    created: number;
+    updated: number;
+  }[];
   updated: number;
-}
+};
 
-const LAST_IMPORT_FILE = "last_import.txt";
+const LAST_IMPORT_FILE = 'last_import.txt';
 const INITIAL_IMPORT_TIME = 1745842021;
-const BATCH_SIZE = 100; // Number of pages to import per batch
 
-if (import.meta.main) {
+if (import.meta.path === Bun.main) {
   await main();
 }
 
-async function main(): Promise<void> {
-  try {
-    const config = await getConfig();
-    const pages = await exportPagesFromProject(config);
+// TODO: use runtime
+async function main() {
+  await Effect.runPromise(
+    mainEffect().pipe(
+      Effect.catchAll(error =>
+        Effect.sync(() => {
+          console.error('Error:', error);
+          process.exit(1);
+        }),
+      ),
+    ),
+  );
+}
+
+function mainEffect() {
+  return Effect.gen(function* () {
+    const config = yield* getConfigEffect();
+    const pages = yield* exportPagesFromProject(
+      config.exportingProjectName,
+      config.sid,
+    );
     const filteredPages = filterPrivateIconPages(pages);
-    const lastImportTime = await getLastImportTime();
+    const lastImportTime = yield* getLastImportTimeEffect();
     const newPages = filteredPages.filter(p => p.updated > lastImportTime);
 
     if (newPages.length === 0) {
-      console.log("No new pages to import.");
+      console.log('No new pages to import.');
       return;
     }
 
     console.log(`Found ${newPages.length} new or updated pages to import.`);
     console.log(newPages.map(p => p.title));
 
-
-    await importPagesToProject(config, newPages);
-    await saveLastImportTime(Math.max(...newPages.map(p => p.updated)));
-  } catch (error) {
-    console.error("Error:", error);
-    Deno.exit(1);
-  }
-}
-
-async function getConfig(): Promise<Config> {
-  const sid = Deno.env.get("SID");
-  const exportingProjectName = Deno.env.get("SOURCE_PROJECT_NAME");
-  const importingProjectName = Deno.env.get("DESTINATION_PROJECT_NAME");
-
-  assertString(sid);
-  assertString(exportingProjectName);
-  assertString(importingProjectName);
-
-  return {
-    sid,
-    exportingProjectName,
-    importingProjectName
-  }
-}
-
-async function exportPagesFromProject(config: Config): Promise<Page[]> {
-  console.log(`Exporting a json file from "/${config.exportingProjectName}"...`);
-
-  const result = await exportPages(config.exportingProjectName, {
-    sid: config.sid,
-    metadata: true,
+    yield* importPagesToProject(
+      config.importingProjectName,
+      newPages,
+      config.sid,
+    );
+    yield* saveLastImportTimeEffect(Math.max(...newPages.map(p => p.updated)));
   });
+}
 
-  if (!result.ok) {
-    const error = new Error();
-    error.name = `${result.value.name} when exporting a json file`;
-    error.message = result.value.message;
-    throw error;
-  }
+function getConfigEffect() {
+  return Effect.gen(function* () {
+    const sid = yield* Config.string('SID');
+    const exportingProjectName = yield* Config.string('SOURCE_PROJECT_NAME');
+    const importingProjectName = yield* Config.string(
+      'DESTINATION_PROJECT_NAME',
+    );
 
-  return result.value.pages;
+    return {
+      sid,
+      exportingProjectName,
+      importingProjectName,
+    };
+  });
 }
 
 function filterPrivateIconPages(pages: Page[]): Page[] {
-  return pages.filter(p => !isIncludedIcon("[private.icon]")(p.lines));
+  return pages.filter(p => !isIncludedIcon('[private.icon]')(p.lines));
 }
 
 function isIncludedIcon(icon: `[${string}.icon]`) {
-  return (lines: { text: string }[]) => lines.some((line) => line.text.includes(icon));
+  return (lines: { text: string }[]) =>
+    lines.some(line => line.text.includes(icon));
 }
 
-async function importPagesToProject(
-  config: Config,
-  pages: Page[],
-): Promise<void> {
-  if (pages.length === 0) {
-    console.log("No page to be imported found.");
-    return;
-  }
-
-  console.log(`Importing ${pages.length} pages to "/${config.importingProjectName}" in batches of ${BATCH_SIZE}...`);
-
-  await processBatches(pages, BATCH_SIZE, async (batch, batchNumber, totalBatches) => {
-    console.log(`Importing batch ${batchNumber}/${totalBatches} (${batch.length} pages)...`);
-
-    const result = await importPages(config.importingProjectName, { pages: batch }, { sid: config.sid });
-
-    if (!result.ok) {
-      const error = new Error();
-      error.name = `${result.value.name} when importing pages (batch ${batchNumber}/${totalBatches})`;
-      error.message = result.value.message;
-      throw error;
-    }
-
-    console.log(`Batch ${batchNumber}/${totalBatches} completed successfully.`);
-
-    // Add a small delay between batches to avoid rate limiting
-    if (batchNumber < totalBatches) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  });
-
-  console.log(`All ${pages.length} pages imported successfully.`);
-}
-
-async function getLastImportTime(): Promise<number> {
-  try {
-    const content = await Deno.readTextFile(LAST_IMPORT_FILE);
-    return parseInt(content, 10);
-  } catch {
-    // 初回実行時は特定の日時を設定
-    await saveLastImportTime(INITIAL_IMPORT_TIME);
-    return INITIAL_IMPORT_TIME;
-  }
-}
-
-async function saveLastImportTime(time: number): Promise<void> {
-  await Deno.writeTextFile(LAST_IMPORT_FILE, time.toString());
-}
-
-async function processBatches<T>(
-  items: T[],
-  batchSize: number,
-  processFunc: (batch: T[], batchNumber: number, totalBatches: number) => Promise<void>
-): Promise<void> {
-  const batches = Array.from(
-    { length: Math.ceil(items.length / batchSize) },
-    (_, i) => items.slice(i * batchSize, (i + 1) * batchSize)
+function getLastImportTimeEffect() {
+  return Effect.tryPromise({
+    try: async () => {
+      const file = Bun.file(LAST_IMPORT_FILE);
+      const content = await file.text();
+      return parseInt(content, 10);
+    },
+    catch: error => ({
+      _tag: 'FileReadError' as const,
+      message: error instanceof Error ? error.message : 'Failed to read file',
+      path: LAST_IMPORT_FILE,
+    }),
+  }).pipe(
+    Effect.catchAll(() =>
+      saveLastImportTimeEffect(INITIAL_IMPORT_TIME).pipe(
+        Effect.map(() => INITIAL_IMPORT_TIME),
+      ),
+    ),
   );
+}
 
-  await batches.reduce(async (previousPromise, batch, index) => {
-    await previousPromise;
-    await processFunc(batch, index + 1, batches.length);
-  }, Promise.resolve());
+function saveLastImportTimeEffect(time: number) {
+  return Effect.tryPromise({
+    try: () => Bun.write(LAST_IMPORT_FILE, time.toString()),
+    catch: error => ({
+      _tag: 'FileWriteError' as const,
+      message: error instanceof Error ? error.message : 'Failed to write file',
+      path: LAST_IMPORT_FILE,
+    }),
+  });
 }
